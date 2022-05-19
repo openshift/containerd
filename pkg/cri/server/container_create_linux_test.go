@@ -18,6 +18,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,7 +34,6 @@ import (
 	imagespec "github.com/opencontainers/image-spec/specs-go/v1"
 	runtimespec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/opencontainers/selinux/go-selinux"
-	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
@@ -255,15 +255,14 @@ func TestContainerCapabilities(t *testing.T) {
 		for _, include := range test.includes {
 			assert.Contains(t, spec.Process.Capabilities.Bounding, include)
 			assert.Contains(t, spec.Process.Capabilities.Effective, include)
-			assert.Contains(t, spec.Process.Capabilities.Inheritable, include)
 			assert.Contains(t, spec.Process.Capabilities.Permitted, include)
 		}
 		for _, exclude := range test.excludes {
 			assert.NotContains(t, spec.Process.Capabilities.Bounding, exclude)
 			assert.NotContains(t, spec.Process.Capabilities.Effective, exclude)
-			assert.NotContains(t, spec.Process.Capabilities.Inheritable, exclude)
 			assert.NotContains(t, spec.Process.Capabilities.Permitted, exclude)
 		}
+		assert.Empty(t, spec.Process.Capabilities.Inheritable)
 		assert.Empty(t, spec.Process.Capabilities.Ambient)
 	}
 }

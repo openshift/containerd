@@ -46,7 +46,6 @@ import (
 	"github.com/containerd/typeurl"
 	gogotypes "github.com/gogo/protobuf/types"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
-	"github.com/pkg/errors"
 	exec "golang.org/x/sys/execabs"
 )
 
@@ -1903,7 +1902,7 @@ func TestRegressionIssue4769(t *testing.T) {
 	select {
 	case et := <-statusC:
 		if got := et.ExitCode(); got != 0 {
-			t.Fatal(errors.Errorf("expect zero exit status, but got %v", got))
+			t.Fatal(fmt.Errorf("expect zero exit status, but got %v", got))
 		}
 	case <-time.After(timeout):
 		t.Fatal(fmt.Errorf("failed to get exit event in time"))
@@ -1913,21 +1912,21 @@ func TestRegressionIssue4769(t *testing.T) {
 	select {
 	case et := <-eventStream:
 		if et.Event == nil {
-			t.Fatal(errors.Errorf("unexpected empty event: %+v", et))
+			t.Fatal(fmt.Errorf("unexpected empty event: %+v", et))
 		}
 
 		v, err := typeurl.UnmarshalAny(et.Event)
 		if err != nil {
-			t.Fatal(errors.Wrap(err, "failed to unmarshal event"))
+			t.Fatal(fmt.Errorf("failed to unmarshal event: %w", err))
 		}
 
 		if e, ok := v.(*apievents.TaskExit); !ok {
-			t.Fatal(errors.Errorf("unexpected event type: %+v", v))
+			t.Fatal(fmt.Errorf("unexpected event type: %+v", v))
 		} else if e.ExitStatus != 0 {
-			t.Fatal(errors.Errorf("expect zero exit status, but got %v", e.ExitStatus))
+			t.Fatal(fmt.Errorf("expect zero exit status, but got %v", e.ExitStatus))
 		}
 	case err := <-errC:
-		t.Fatal(errors.Wrap(err, "unexpected error from event service"))
+		t.Fatal(fmt.Errorf("unexpected error from event service: %w", err))
 
 	case <-time.After(timeout):
 		t.Fatal(fmt.Errorf("failed to get exit event in time"))
@@ -1940,9 +1939,70 @@ func TestRegressionIssue4769(t *testing.T) {
 	// check duplicate event should not show up
 	select {
 	case event := <-eventStream:
-		t.Fatal(errors.Errorf("unexpected exit event: %+v", event))
+		t.Fatal(fmt.Errorf("unexpected exit event: %+v", event))
 	case err := <-errC:
-		t.Fatal(errors.Wrap(err, "unexpected error from event service"))
+		t.Fatal(fmt.Errorf("unexpected error from event service: %w", err))
+	case <-time.After(timeout):
+	}
+}
+
+// TestRegressionIssue6429 should not send exit event out if command is not found.
+//
+// Issue: https://github.com/containerd/containerd/issues/6429.
+func TestRegressionIssue6429(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("Test relies on runc")
+	}
+
+	client, err := newClient(t, address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	// use unique namespace to get unique task events
+	id := t.Name()
+	ns := fmt.Sprintf("%s-%s", testNamespace, id)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ctx = namespaces.WithNamespace(ctx, ns)
+	ctx = logtest.WithT(ctx, t)
+
+	image, err := client.Pull(ctx, testImage, WithPullUnpack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.ImageService().Delete(ctx, testImage, images.SynchronousDelete())
+
+	container, err := client.NewContainer(ctx, id,
+		WithNewSnapshot(id, image),
+		WithNewSpec(oci.WithImageConfig(image), withProcessArgs("notfound404")),
+		WithRuntime(client.Runtime(), nil),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer container.Delete(ctx, WithSnapshotCleanup)
+
+	eventStream, errC := client.EventService().Subscribe(ctx, "namespace=="+ns+",topic~=|^/tasks/exit|")
+
+	if _, err := container.NewTask(ctx, empty()); err == nil {
+		t.Fatalf("expected error but got nil")
+	}
+
+	var timeout = 10 * time.Second
+
+	// start to check events
+	select {
+	case et := <-eventStream:
+		t.Fatal(fmt.Errorf("unexpected task exit event: %+v", et))
+	case err := <-errC:
+		t.Fatal(fmt.Errorf("unexpected error from event service: %w", err))
+
 	case <-time.After(timeout):
 	}
 }
@@ -2357,4 +2417,128 @@ func TestTaskSpec(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-statusC
+}
+
+func TestContainerUsername(t *testing.T) {
+	t.Parallel()
+
+	client, err := newClient(t, address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var (
+		image       Image
+		ctx, cancel = testContext(t)
+		id          = t.Name()
+	)
+	defer cancel()
+
+	image, err = client.GetImage(ctx, testImage)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	username := "www-data"
+	command := []string{
+		"id", "-u",
+	}
+	expectedOutput := "33"
+	if runtime.GOOS == "windows" {
+		username = "ContainerUser"
+		command = []string{
+			"echo", `%USERNAME%`,
+		}
+		expectedOutput = "ContainerUser"
+	}
+
+	// the www-data user in the busybox image has a uid of 33
+	container, err := client.NewContainer(ctx, id,
+		WithNewSnapshot(id, image),
+		WithNewSpec(oci.WithImageConfig(image), oci.WithUsername(username), withProcessArgs(command...)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer container.Delete(ctx, WithSnapshotCleanup)
+
+	buf := bytes.NewBuffer(nil)
+	task, err := container.NewTask(ctx, cio.NewCreator(withByteBuffers(buf)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	statusC, err := task.Wait(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := task.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	<-statusC
+	if _, err := task.Delete(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	output := strings.TrimSuffix(buf.String(), newLine)
+	if output != expectedOutput {
+		t.Errorf("expected %s uid to be %s but received %q", username, expectedOutput, buf.String())
+	}
+}
+
+func TestContainerPTY(t *testing.T) {
+	t.Parallel()
+
+	client, err := newClient(t, address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var (
+		image       Image
+		ctx, cancel = testContext(t)
+		id          = t.Name()
+	)
+	defer cancel()
+
+	image, err = client.GetImage(ctx, testImage)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	container, err := client.NewContainer(ctx, id, WithNewSnapshot(id, image), WithNewSpec(oci.WithImageConfig(image), oci.WithTTY, withProcessArgs("echo", "hello")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer container.Delete(ctx, WithSnapshotCleanup)
+
+	buf := bytes.NewBuffer(nil)
+	task, err := container.NewTask(ctx, cio.NewCreator(withByteBuffers(buf), withProcessTTY()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer task.Delete(ctx)
+
+	statusC, err := task.Wait(ctx)
+	if err != nil {
+		t.Error(err)
+	}
+
+	if err := task.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	<-statusC
+
+	if _, err := task.Delete(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	out := buf.String()
+	if !strings.ContainsAny(fmt.Sprintf("%#q", out), `\x00`) {
+		t.Fatal(`expected \x00 in output`)
+	}
 }

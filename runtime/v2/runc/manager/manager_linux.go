@@ -19,7 +19,8 @@ package manager
 import (
 	"context"
 	"encoding/json"
-	"io/ioutil"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	goruntime "runtime"
@@ -40,7 +41,6 @@ import (
 	"github.com/containerd/typeurl"
 	"github.com/gogo/protobuf/proto"
 	ptypes "github.com/gogo/protobuf/types"
-	"github.com/pkg/errors"
 	exec "golang.org/x/sys/execabs"
 	"golang.org/x/sys/unix"
 )
@@ -141,19 +141,19 @@ func (manager) Start(ctx context.Context, id string, opts shim.StartOpts) (_ str
 		// grouping functionality where the new process should be run with the same
 		// shim as an existing container
 		if !shim.SocketEaddrinuse(err) {
-			return "", errors.Wrap(err, "create new shim socket")
+			return "", fmt.Errorf("create new shim socket: %w", err)
 		}
 		if shim.CanConnect(address) {
 			if err := shim.WriteAddress("address", address); err != nil {
-				return "", errors.Wrap(err, "write existing socket for shim")
+				return "", fmt.Errorf("write existing socket for shim: %w", err)
 			}
 			return address, nil
 		}
 		if err := shim.RemoveSocket(address); err != nil {
-			return "", errors.Wrap(err, "remove pre-existing socket")
+			return "", fmt.Errorf("remove pre-existing socket: %w", err)
 		}
 		if socket, err = shim.NewSocket(address); err != nil {
-			return "", errors.Wrap(err, "try create new shim socket 2x")
+			return "", fmt.Errorf("try create new shim socket 2x: %w", err)
 		}
 	}
 	defer func() {
@@ -178,7 +178,7 @@ func (manager) Start(ctx context.Context, id string, opts shim.StartOpts) (_ str
 	goruntime.LockOSThread()
 	if os.Getenv("SCHED_CORE") != "" {
 		if err := schedcore.Create(schedcore.ProcessGroup); err != nil {
-			return "", errors.Wrap(err, "enable sched core support")
+			return "", fmt.Errorf("enable sched core support: %w", err)
 		}
 	}
 
@@ -196,7 +196,7 @@ func (manager) Start(ctx context.Context, id string, opts shim.StartOpts) (_ str
 	}()
 	// make sure to wait after start
 	go cmd.Wait()
-	if data, err := ioutil.ReadAll(os.Stdin); err == nil {
+	if data, err := io.ReadAll(os.Stdin); err == nil {
 		if len(data) > 0 {
 			var any ptypes.Any
 			if err := proto.Unmarshal(data, &any); err != nil {
@@ -211,20 +211,20 @@ func (manager) Start(ctx context.Context, id string, opts shim.StartOpts) (_ str
 					if cgroups.Mode() == cgroups.Unified {
 						cg, err := cgroupsv2.LoadManager("/sys/fs/cgroup", opts.ShimCgroup)
 						if err != nil {
-							return "", errors.Wrapf(err, "failed to load cgroup %s", opts.ShimCgroup)
+							return "", fmt.Errorf("failed to load cgroup %s: %w", opts.ShimCgroup, err)
 						}
 						if err := cg.AddProc(uint64(cmd.Process.Pid)); err != nil {
-							return "", errors.Wrapf(err, "failed to join cgroup %s", opts.ShimCgroup)
+							return "", fmt.Errorf("failed to join cgroup %s: %w", opts.ShimCgroup, err)
 						}
 					} else {
 						cg, err := cgroups.Load(cgroups.V1, cgroups.StaticPath(opts.ShimCgroup))
 						if err != nil {
-							return "", errors.Wrapf(err, "failed to load cgroup %s", opts.ShimCgroup)
+							return "", fmt.Errorf("failed to load cgroup %s: %w", opts.ShimCgroup, err)
 						}
 						if err := cg.Add(cgroups.Process{
 							Pid: cmd.Process.Pid,
 						}); err != nil {
-							return "", errors.Wrapf(err, "failed to join cgroup %s", opts.ShimCgroup)
+							return "", fmt.Errorf("failed to join cgroup %s: %w", opts.ShimCgroup, err)
 						}
 					}
 				}
@@ -232,7 +232,7 @@ func (manager) Start(ctx context.Context, id string, opts shim.StartOpts) (_ str
 		}
 	}
 	if err := shim.AdjustOOMScore(cmd.Process.Pid); err != nil {
-		return "", errors.Wrap(err, "failed to adjust OOM score for shim")
+		return "", fmt.Errorf("failed to adjust OOM score for shim: %w", err)
 	}
 	return address, nil
 }
@@ -270,8 +270,13 @@ func (manager) Stop(ctx context.Context, id string) (shim.StopStatus, error) {
 	if err := mount.UnmountAll(filepath.Join(path, "rootfs"), 0); err != nil {
 		log.G(ctx).WithError(err).Warn("failed to cleanup rootfs mount")
 	}
+	pid, err := runcC.ReadPidFile(filepath.Join(path, process.InitPidFile))
+	if err != nil {
+		log.G(ctx).WithError(err).Warn("failed to read init pid file")
+	}
 	return shim.StopStatus{
 		ExitedAt:   time.Now(),
 		ExitStatus: 128 + int(unix.SIGKILL),
+		Pid:        pid,
 	}, nil
 }

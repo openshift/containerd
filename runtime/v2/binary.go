@@ -19,6 +19,7 @@ package v2
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -32,7 +33,6 @@ import (
 	"github.com/containerd/containerd/runtime/v2/task"
 	"github.com/containerd/ttrpc"
 	"github.com/gogo/protobuf/types"
-	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
 
@@ -93,7 +93,7 @@ func (b *binary) Start(ctx context.Context, opts *types.Any, onClose func()) (_ 
 	}()
 	f, err := openShimLog(shimCtx, b.bundle, client.AnonDialer)
 	if err != nil {
-		return nil, errors.Wrap(err, "open shim log pipe")
+		return nil, fmt.Errorf("open shim log pipe: %w", err)
 	}
 	defer func() {
 		if err != nil {
@@ -116,7 +116,7 @@ func (b *binary) Start(ctx context.Context, opts *types.Any, onClose func()) (_ 
 	}()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, errors.Wrapf(err, "%s", out)
+		return nil, fmt.Errorf("%s: %w", out, err)
 	}
 	address := strings.TrimSpace(string(out))
 	conn, err := client.Connect(address, client.AnonDialer)
@@ -129,7 +129,7 @@ func (b *binary) Start(ctx context.Context, opts *types.Any, onClose func()) (_ 
 		f.Close()
 	}
 	// Save runtime binary path for restore.
-	if err := os.WriteFile(filepath.Join(b.bundle.Path, "runtime"), []byte(b.runtime), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(b.bundle.Path, "shim-binary-path"), []byte(b.runtime), 0600); err != nil {
 		return nil, err
 	}
 	client := ttrpc.NewClient(conn, ttrpc.WithOnClose(onCloseWithShimLog))
@@ -177,7 +177,7 @@ func (b *binary) Delete(ctx context.Context) (*runtime.Exit, error) {
 	cmd.Stderr = errb
 	if err := cmd.Run(); err != nil {
 		log.G(ctx).WithField("cmd", cmd).WithError(err).Error("failed to delete")
-		return nil, errors.Wrapf(err, "%s", errb.String())
+		return nil, fmt.Errorf("%s: %w", errb.String(), err)
 	}
 	s := errb.String()
 	if s != "" {

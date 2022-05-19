@@ -10,9 +10,9 @@ on:
         required: true
       AZURE_CREDS:
         required: true
-      GCP_PROJECT_ID:
+      GCP_SERVICE_ACCOUNT:
         required: true
-      GCP_SA_KEY:
+      GCP_WORKLOAD_IDENTITY_PROVIDER:
         required: true
 
 env:
@@ -23,9 +23,17 @@ env:
   DEFAULT_ADMIN_USERNAME: azureuser
   SSH_OPTS: "-o ServerAliveInterval=20 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
   REMOTE_VM_BIN_PATH: "c:\\containerd\\bin"
+  BUSYBOX_TESTING_IMAGE_REF: "k8s.gcr.io/e2e-test-images/busybox:1.29-2"
+  RESOURCE_CONSUMER_TESTING_IMAGE_REF: "k8s.gcr.io/e2e-test-images/resource-consumer:1.10"
+  WEBSERVER_TESTING_IMAGE_REF: "k8s.gcr.io/e2e-test-images/nginx:1.14-2"
+
 
 jobs:
   winIntegration:
+    # NOTE: the following permissions are required by `google-github-actions/auth`:
+    permissions:
+      contents: 'read'
+      id-token: 'write'
     strategy:
       matrix:
         win_ver: [ltsc2019, ltsc2022]
@@ -33,11 +41,11 @@ jobs:
         - win_ver: ltsc2019
           AZURE_IMG: "MicrosoftWindowsServer:WindowsServer:2019-Datacenter-with-Containers-smalldisk:17763.1935.2105080716"
           AZURE_RESOURCE_GROUP: ctrd-integration-ltsc2019-${{ github.run_id }}
-          GOOGLE_BUCKET: "gs://containerd-integration/logs/windows-ltsc2019/"
+          GOOGLE_BUCKET: "containerd-integration/logs/windows-ltsc2019/"
         - win_ver: ltsc2022
           AZURE_IMG: "MicrosoftWindowsServer:WindowsServer:2022-datacenter-smalldisk-g2:20348.169.2108120020"
           AZURE_RESOURCE_GROUP: ctrd-integration-ltsc2022-${{ github.run_id }}
-          GOOGLE_BUCKET: "gs://containerd-integration/logs/windows-ltsc2022/"
+          GOOGLE_BUCKET: "containerd-integration/logs/windows-ltsc2022/"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
@@ -77,13 +85,25 @@ jobs:
         uses: azure/CLI@v1
         with:
           inlinescript: |
-            az vm create -n winTestVM --admin-username ${{ env.DEFAULT_ADMIN_USERNAME }} --admin-password ${{ env.PASSWORD }} --image ${{ matrix.AZURE_IMG }} -g ${{ matrix.AZURE_RESOURCE_GROUP }} --nsg-rule SSH --size ${{ env.AZURE_DEFAULT_VM_SIZE }}
+            DETAILS=$(az vm create -n winTestVM --admin-username ${{ env.DEFAULT_ADMIN_USERNAME }} --admin-password ${{ env.PASSWORD }} --image ${{ matrix.AZURE_IMG }} -g ${{ matrix.AZURE_RESOURCE_GROUP }} --nsg-rule SSH --size ${{ env.AZURE_DEFAULT_VM_SIZE }} --public-ip-sku Standard -o json)
+            PUB_IP=$(echo $DETAILS | jq -r .publicIpAddress)
+            if [ "$PUB_IP" == "null" ]
+            then
+                RETRY=0
+                while [ "$PUB_IP" == "null" ] || [ $RETRY -le 5 ]
+                do
+                    sleep 5
+                    PUB_IP=$(az vm show -d -g ${{ matrix.AZURE_RESOURCE_GROUP }} -n winTestVM -o json --query publicIps | jq -r)
+                    RETRY=$(( $RETRY + 1 ))
+                done
+            fi
 
-      - name: GetAZVMPublicIP
-        uses: azure/CLI@v1
-        with:
-          inlinescript: |
-            echo "VM_PUB_IP=$(az network public-ip list -g ${{ matrix.AZURE_RESOURCE_GROUP }} | jq '.[0]["ipAddress"]' | tr -d '\"')" >> $GITHUB_ENV
+            if [ "$PUB_IP" == "null" ]
+            then
+                echo "failed to fetch public IP"
+                exit 1
+            fi
+            echo "VM_PUB_IP=$PUB_IP" >> $GITHUB_ENV
 
       - name: EnableAZVMSSH
         uses: azure/CLI@v1
@@ -143,13 +163,20 @@ jobs:
           ssh -i $HOME/.ssh/id_rsa ${{ env.SSH_OPTS }} azureuser@${{ env.VM_PUB_IP }} "sh.exe -c 'cd /c/containerd && (make integration | tee /c/Logs/integration.log)'"
           ssh -i $HOME/.ssh/id_rsa ${{ env.SSH_OPTS }} azureuser@${{ env.VM_PUB_IP }} "sh.exe -c 'cat /c/Logs/integration.log | go-junit-report.exe > /c/Logs/junit_00.xml'"
 
-      # CRI-integration tests for Windows PR is not merged. TO DO (adelina-t): enable these when PR #5163 merges.
       - name: PrepareRepoList
         run: |
-           ssh -i $HOME/.ssh/id_rsa ${{ env.SSH_OPTS }} azureuser@${{ env.VM_PUB_IP }} "sh -c 'cat > c:/repolist.toml'" <<'EOF'
-               busybox = "k8s.gcr.io/e2e-test-images/busybox:1.29-2"
-               ResourceConsumer = "k8s.gcr.io/e2e-test-images/resource-consumer:1.10"
-           EOF
+            cat > repolist.toml << EOF
+            busybox = "${{ env.BUSYBOX_TESTING_IMAGE_REF }}"
+            ResourceConsumer = "${{ env.RESOURCE_CONSUMER_TESTING_IMAGE_REF }}"
+            EOF
+
+            cat > cri-test-images.yaml << EOF
+            defaultTestContainerImage: ${{ env.BUSYBOX_TESTING_IMAGE_REF }}
+            webServerTestImage: ${{ env.WEBSERVER_TESTING_IMAGE_REF }}
+            EOF
+
+            scp -i $HOME/.ssh/id_rsa ${{ env.SSH_OPTS }} repolist.toml azureuser@${{ env.VM_PUB_IP }}:c:/repolist.toml
+            scp -i $HOME/.ssh/id_rsa ${{ env.SSH_OPTS }} cri-test-images.yaml azureuser@${{ env.VM_PUB_IP }}:c:/cri-test-images.yaml
 
       - name: RunCRIIntegrationTests
         run: |
@@ -163,19 +190,16 @@ jobs:
            ssh -i $HOME/.ssh/id_rsa ${{ env.SSH_OPTS }} azureuser@${{ env.VM_PUB_IP }} "sh.exe -c 'cat /c/Logs/cri-integration.log | go-junit-report.exe > c:/Logs/junit_01.xml' "
 
       - name: GetCritestRepo
-        if: ${{ matrix.win_ver != 'ltsc2022' }}
         run: |
           ssh -i $HOME/.ssh/id_rsa ${{ env.SSH_OPTS }} azureuser@${{ env.VM_PUB_IP }} "git clone https://github.com/kubernetes-sigs/cri-tools c:/cri-tools"
 
       - name: BuildCritest
-        if: ${{ matrix.win_ver != 'ltsc2022' }}
         run: |
           ssh -i $HOME/.ssh/id_rsa ${{ env.SSH_OPTS }} azureuser@${{ env.VM_PUB_IP }} "sh.exe -c 'cd /c/cri-tools && make critest'"
 
       - name: RunCritest
-        if: ${{ matrix.win_ver != 'ltsc2022' }}
         run: |
-          ssh -i $HOME/.ssh/id_rsa ${{ env.SSH_OPTS }} azureuser@${{ env.VM_PUB_IP }} "powershell.exe -command { Start-Process -FilePath C:\containerd\bin\containerd.exe -NoNewWindow -RedirectStandardError true -PassThru ; get-process | sls containerd ; start-sleep 5 ; c:\cri-tools\build\bin\critest.exe --runtime-endpoint=\"npipe:\\\\.\\pipe\\containerd-containerd\" --report-dir='c:\Logs' }"
+          ssh -i $HOME/.ssh/id_rsa ${{ env.SSH_OPTS }} azureuser@${{ env.VM_PUB_IP }} "powershell.exe -command { Start-Process -FilePath C:\containerd\bin\containerd.exe -NoNewWindow -RedirectStandardError true -PassThru ; get-process | sls containerd ; start-sleep 5 ; c:\cri-tools\build\bin\critest.exe --runtime-endpoint=\"npipe:\\\\.\\pipe\\containerd-containerd\" --test-images-file='c:\cri-test-images.yaml' --report-dir='c:\Logs' }"
 
       - name: PullLogsFromWinNode
         run: |
@@ -188,29 +212,39 @@ jobs:
       - name: FinishJob
         run: |
           jq -n --arg result SUCCESS --arg timestamp $(date +%s) '$timestamp|tonumber|{timestamp:.,$result}' > ${{ env.LOGS_DIR }}/finished.json
-          echo "${{ env.STARTED_TIME }}" > $HOME/latest-build.txt
+          echo "${{ env.STARTED_TIME }}" > ${{ github.workspace }}/latest-build.txt
 
       - name: AssignGcpCreds
         id: AssignGcpCreds
         run: |
-          echo '::set-output name=GCP_PROJECT_ID::${{ secrets.GCP_PROJECT_ID }}'
-          echo '::set-output name=GCP_SA_KEY::${{ secrets.GCP_SA_KEY }}'
+          echo '::set-output name=GCP_SERVICE_ACCOUNT::${{ secrets.GCP_SERVICE_ACCOUNT }}'
+          echo '::set-output name=GCP_WORKLOAD_IDENTITY_PROVIDER::${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}'
 
-      - name: SetUpCloudSDK
-        if: steps.AssignGcpCreds.outputs.GCP_PROJECT_ID && steps.AssignGcpCreds.outputs.GCP_SA_KEY
-        uses: google-github-actions/setup-gcloud@master
+      - name: AuthGcp
+        uses: google-github-actions/auth@v0
+        if: steps.AssignGcpCreds.outputs.GCP_SERVICE_ACCOUNT && steps.AssignGcpCreds.outputs.GCP_WORKLOAD_IDENTITY_PROVIDER
         with:
-          project_id: ${{ secrets.GCP_PROJECT_ID }}
-          service_account_key: ${{ secrets.GCP_SA_KEY }}
-          export_default_credentials: true
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
 
-      - name: UploadArtifacts
-        if: steps.AssignGcpCreds.outputs.GCP_PROJECT_ID && steps.AssignGcpCreds.outputs.GCP_SA_KEY
-        run: |
-          gsutil cp -r ${{ env.LOGS_DIR }} ${{ matrix.GOOGLE_BUCKET }}
-          gsutil cp $HOME/latest-build.txt ${{ matrix.GOOGLE_BUCKET }}
+      - name: UploadJobReport
+        uses: google-github-actions/upload-cloud-storage@v0
+        if: steps.AssignGcpCreds.outputs.GCP_SERVICE_ACCOUNT && steps.AssignGcpCreds.outputs.GCP_WORKLOAD_IDENTITY_PROVIDER
+        with:
+          path: ${{ github.workspace }}/latest-build.txt
+          destination: ${{ matrix.GOOGLE_BUCKET }}
+          parent: false
+
+      - name: UploadLogsDir
+        uses: google-github-actions/upload-cloud-storage@v0
+        if: steps.AssignGcpCreds.outputs.GCP_SERVICE_ACCOUNT && steps.AssignGcpCreds.outputs.GCP_WORKLOAD_IDENTITY_PROVIDER
+        with:
+          path: ${{ env.LOGS_DIR }}
+          destination: ${{ matrix.GOOGLE_BUCKET }}${{ env.STARTED_TIME}}
+          parent: false
 
       - name: ResourceCleanup
+        if: always()
         uses: azure/CLI@v1
         with:
           inlinescript: |
