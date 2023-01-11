@@ -20,6 +20,8 @@
 package config
 
 import (
+	"time"
+
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/pkg/cri/streaming"
 	"github.com/pelletier/go-toml"
@@ -104,5 +106,6 @@ func DefaultConfig() PluginConfig {
 		ImageDecryption: ImageDecryption{
 			KeyModel: KeyModelNode,
 		},
+		ImagePullProgressTimeout: time.Minute.String(),
 	}
 }
