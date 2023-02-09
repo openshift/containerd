@@ -6,7 +6,10 @@ on:
 name: Containerd Release
 
 env:
-  GO_VERSION: '1.18.9'
+  GO_VERSION: '1.18.10'
+
+permissions:  # added using https://github.com/step-security/secure-workflows
+  contents: read
 
 jobs:
   check:
@@ -127,6 +130,8 @@ jobs:
 
   release:
     name: Create containerd Release
+    permissions:
+      contents: write
     runs-on: ubuntu-20.04
     timeout-minutes: 10
     needs: [build, check]
