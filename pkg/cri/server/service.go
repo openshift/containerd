@@ -66,7 +66,7 @@ type grpcAlphaServices interface {
 
 // CRIService is the interface implement CRI remote service server.
 type CRIService interface {
-	Run() error
+	Run(ready func()) error
 	// io.Closer is used by containerd to gracefully stop cri service.
 	io.Closer
 	Register(*grpc.Server) error
@@ -113,7 +113,7 @@ type criService struct {
 	baseOCISpecs map[string]*oci.Spec
 	// allCaps is the list of the capabilities.
 	// When nil, parsed from CapEff of /proc/self/status.
-	allCaps []string // nolint
+	allCaps []string //nolint:nolintlint,unused // Ignore on non-Linux
 	// unpackDuplicationSuppressor is used to make sure that there is only
 	// one in-flight fetch request or unpack handler for a given descriptor's
 	// or chain ID.
@@ -200,7 +200,7 @@ func (c *criService) RegisterTCP(s *grpc.Server) error {
 }
 
 // Run starts the CRI service.
-func (c *criService) Run() error {
+func (c *criService) Run(ready func()) error {
 	logrus.Info("Start subscribing containerd event")
 	c.eventMonitor.subscribe(c.client)
 
@@ -251,6 +251,7 @@ func (c *criService) Run() error {
 
 	// Set the server as initialized. GRPC services could start serving traffic.
 	c.initialized.Set()
+	ready()
 
 	var eventMonitorErr, streamServerErr, cniNetConfMonitorErr error
 	// Stop the whole CRI service if any of the critical service exits.

@@ -231,6 +231,7 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 		initContext.Events = events
 		initContext.Address = config.GRPC.Address
 		initContext.TTRPCAddress = config.TTRPC.Address
+		initContext.RegisterReadiness = s.RegisterReadiness
 
 		// load the plugin specific configuration if it is provided
 		if p.Config != nil {
@@ -306,6 +307,7 @@ type Server struct {
 	tcpServer   *grpc.Server
 	config      *srvconfig.Config
 	plugins     []*plugin.Plugin
+	ready       sync.WaitGroup
 }
 
 // ServeGRPC provides the containerd grpc APIs on the provided listener
@@ -330,7 +332,11 @@ func (s *Server) ServeTTRPC(l net.Listener) error {
 func (s *Server) ServeMetrics(l net.Listener) error {
 	m := http.NewServeMux()
 	m.Handle("/v1/metrics", metrics.Handler())
-	return trapClosedConnErr(http.Serve(l, m))
+	srv := &http.Server{
+		Handler:           m,
+		ReadHeaderTimeout: 5 * time.Minute, // "G112: Potential Slowloris Attack (gosec)"; not a real concern for our use, so setting a long timeout.
+	}
+	return trapClosedConnErr(srv.Serve(l))
 }
 
 // ServeTCP allows services to serve over tcp
@@ -350,7 +356,11 @@ func (s *Server) ServeDebug(l net.Listener) error {
 	m.Handle("/debug/pprof/profile", http.HandlerFunc(pprof.Profile))
 	m.Handle("/debug/pprof/symbol", http.HandlerFunc(pprof.Symbol))
 	m.Handle("/debug/pprof/trace", http.HandlerFunc(pprof.Trace))
-	return trapClosedConnErr(http.Serve(l, m))
+	srv := &http.Server{
+		Handler:           m,
+		ReadHeaderTimeout: 5 * time.Minute, // "G112: Potential Slowloris Attack (gosec)"; not a real concern for our use, so setting a long timeout.
+	}
+	return trapClosedConnErr(srv.Serve(l))
 }
 
 // Stop the containerd server canceling any open connections
@@ -373,6 +383,17 @@ func (s *Server) Stop() {
 				Error("failed to close plugin")
 		}
 	}
+}
+
+func (s *Server) RegisterReadiness() func() {
+	s.ready.Add(1)
+	return func() {
+		s.ready.Done()
+	}
+}
+
+func (s *Server) Wait() {
+	s.ready.Wait()
 }
 
 // LoadPlugins loads all plugins into containerd and generates an ordered graph
