@@ -12,7 +12,7 @@ on:
 env:
   # Go version we currently use to build containerd across all CI.
   # Note: don't forget to update `Binaries` step, as it contains the matrix of all supported Go versions.
-  GO_VERSION: '1.19.6'
+  GO_VERSION: '1.19.11'
 
 permissions:  # added using https://github.com/step-security/secure-workflows
   contents: read
@@ -47,9 +47,9 @@ jobs:
       - uses: actions/checkout@v3
       - uses: golangci/golangci-lint-action@v3
         with:
-          version: v1.49.0
+          version: v1.50.1
           skip-cache: true
-          args: --timeout=5m
+          args: --timeout=8m
 
   #
   # Project checks
@@ -233,7 +233,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-20.04, macos-12, windows-2019, windows-2022]
-        go-version: ["1.17.13", "1.19.6"]
+        go-version: ["1.17.13", "1.19.11"]
     steps:
       - name: Install dependencies
         if: matrix.os == 'ubuntu-20.04'
@@ -303,14 +303,6 @@ jobs:
           echo "${{ github.workspace }}/src/github.com/containerd/containerd/bin" >> $GITHUB_PATH
 
       - run: script/setup/install-dev-tools
-
-      # There is currently an issue in the race detector in Go on Windows when
-      # used with a newer version of GCC. The issue was first reported here:
-      # https://github.com/golang/go/issues/46099
-      - name: Downgrade MinGW
-        shell: bash
-        run: |
-          choco install mingw --version 10.2.0 --allow-downgrade
 
       - name: Binaries
         env:
@@ -521,7 +513,7 @@ jobs:
         # We can enable crun again when we get a better CI infra.
         runc: [runc]
         # Fedora is for testing cgroup v2 functionality, Rocky Linux is for testing on an enterprise-grade environment
-        box: ["fedora/36-cloud-base", "rockylinux/8"]
+        box: ["fedora/37-cloud-base", "rockylinux/8"]
     env:
       GOTEST: gotestsum --
     steps:
