@@ -991,6 +991,10 @@ func (in *instrumentedService) PullImage(ctx context.Context, r *runtime.PullIma
 		span.SetStatus(err)
 	}()
 	res, err = in.c.PullImage(ctrdutil.WithNamespace(ctx), r)
+	// Sanitize error to remove sensitive information from both logs and returned gRPC error
+	if err != nil {
+		err = ctrdutil.SanitizeError(err)
+	}
 	return res, errdefs.ToGRPC(err)
 }
 
@@ -1017,6 +1021,10 @@ func (in *instrumentedAlphaService) PullImage(ctx context.Context, r *runtime_al
 	}
 	var v1res *runtime.PullImageResponse
 	v1res, err = in.c.PullImage(ctrdutil.WithNamespace(ctx), &v1r)
+	// Sanitize error to remove sensitive information from both logs and returned gRPC error
+	if err != nil {
+		err = ctrdutil.SanitizeError(err)
+	}
 	if v1res != nil {
 		resp := &runtime_alpha.PullImageResponse{}
 		perr := ctrdutil.V1RespToAlphaResp(v1res, resp)
@@ -1052,6 +1060,10 @@ func (in *instrumentedService) ListImages(ctx context.Context, r *runtime.ListIm
 		span.SetStatus(err)
 	}()
 	res, err = in.c.ListImages(ctrdutil.WithNamespace(ctx), r)
+	// Sanitize error to remove sensitive information from both logs and returned gRPC error
+	if err != nil {
+		err = ctrdutil.SanitizeError(err)
+	}
 	return res, errdefs.ToGRPC(err)
 }
 
@@ -1078,6 +1090,10 @@ func (in *instrumentedAlphaService) ListImages(ctx context.Context, r *runtime_a
 	}
 	var v1res *runtime.ListImagesResponse
 	v1res, err = in.c.ListImages(ctrdutil.WithNamespace(ctx), &v1r)
+	// Sanitize error to remove sensitive information from both logs and returned gRPC error
+	if err != nil {
+		err = ctrdutil.SanitizeError(err)
+	}
 	if v1res != nil {
 		resp := &runtime_alpha.ListImagesResponse{}
 		perr := ctrdutil.V1RespToAlphaResp(v1res, resp)
@@ -1113,6 +1129,10 @@ func (in *instrumentedService) ImageStatus(ctx context.Context, r *runtime.Image
 		span.SetStatus(err)
 	}()
 	res, err = in.c.ImageStatus(ctrdutil.WithNamespace(ctx), r)
+	// Sanitize error to remove sensitive information from both logs and returned gRPC error
+	if err != nil {
+		err = ctrdutil.SanitizeError(err)
+	}
 	return res, errdefs.ToGRPC(err)
 }
 
@@ -1139,6 +1159,10 @@ func (in *instrumentedAlphaService) ImageStatus(ctx context.Context, r *runtime_
 	}
 	var v1res *runtime.ImageStatusResponse
 	v1res, err = in.c.ImageStatus(ctrdutil.WithNamespace(ctx), &v1r)
+	// Sanitize error to remove sensitive information from both logs and returned gRPC error
+	if err != nil {
+		err = ctrdutil.SanitizeError(err)
+	}
 	if v1res != nil {
 		resp := &runtime_alpha.ImageStatusResponse{}
 		perr := ctrdutil.V1RespToAlphaResp(v1res, resp)
@@ -1173,6 +1197,10 @@ func (in *instrumentedService) RemoveImage(ctx context.Context, r *runtime.Remov
 		span.SetStatus(err)
 	}()
 	res, err := in.c.RemoveImage(ctrdutil.WithNamespace(ctx), r)
+	// Sanitize error to remove sensitive information from both logs and returned gRPC error
+	if err != nil {
+		err = ctrdutil.SanitizeError(err)
+	}
 	return res, errdefs.ToGRPC(err)
 }
 
@@ -1198,6 +1226,10 @@ func (in *instrumentedAlphaService) RemoveImage(ctx context.Context, r *runtime_
 	}
 	var v1res *runtime.RemoveImageResponse
 	v1res, err = in.c.RemoveImage(ctrdutil.WithNamespace(ctx), &v1r)
+	// Sanitize error to remove sensitive information from both logs and returned gRPC error
+	if err != nil {
+		err = ctrdutil.SanitizeError(err)
+	}
 	if v1res != nil {
 		resp := &runtime_alpha.RemoveImageResponse{}
 		perr := ctrdutil.V1RespToAlphaResp(v1res, resp)
