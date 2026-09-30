@@ -93,15 +93,23 @@ guest:x:100:guest
 		},
 		{
 			user: "405:2147483648",
-			err:  "no groups found",
+			err:  "invalid USER value \"405:2147483648\": gid out of range",
 		},
 		{
 			user: "-1000",
-			err:  "no users found",
+			err:  "invalid USER value \"-1000\": uid out of range",
 		},
 		{
 			user: "2147483648",
-			err:  "no users found",
+			err:  "invalid USER value \"2147483648\": uid out of range",
+		},
+		{
+			user: "999999999999999999999999999999999999",
+			err:  "invalid USER value \"999999999999999999999999999999999999\": uid out of range",
+		},
+		{
+			user: "0:999999999999999999999999999999999999",
+			err:  "invalid USER value \"0:999999999999999999999999999999999999\": gid out of range",
 		},
 	}
 	for _, testCase := range testCases {
@@ -744,7 +752,7 @@ func TestWithAppendAdditionalGroupsNoEtcGroup(t *testing.T) {
 		{
 			name:     "no additional gids, append root group",
 			groups:   []string{"root"},
-			err:      fmt.Sprintf("unable to find group root: open %s: no such file or directory", filepath.Join(td, "etc", "group")),
+			err:      fmt.Sprintf("unable to find group root: stat %s: no such file or directory", filepath.Join(td, "etc", "group")),
 			expected: []uint32{0},
 		},
 		{
